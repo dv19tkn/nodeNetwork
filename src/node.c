@@ -7,6 +7,7 @@ static void exit_on_error(const char *title);
 static void exit_on_error_custom(const char *title, const char *detail);
 static eSystemEvent readEvent(struct NetNode *netnode);
 static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer);
+static void print_buffer(unsigned char *buffer, int size);
 
 static afEventHandler stateMachine = {
 	[q1] = {[eventDone] = gotoStateQ2},			//Q2
@@ -14,7 +15,7 @@ static afEventHandler stateMachine = {
 	[q3] = {[eventNodeResponse] = gotoStateQ7, [eventNodeResponseEmpty] = gotoStateQ4},
 	[q4] = {[eventDone] = gotoStateQ6},																																													//Q6
 	[q5] = {[eventDone] = gotoStateQ6},																																													//Q6
-	[q6] = {[eventInsertLookupRemove] = gotoStateQ9, [eventShutDown] = gotoStateQ10, [eventJoin] = gotoStateQ12, [eventNewRange] = gotoStateQ15, [eventLeaving] = gotoStateQ16, [eventCloseConnection] = gotoStateQ17}, //Q9
+	[q6] = {[eventInsertLookupRemove] = gotoStateQ9, [eventShutDown] = gotoStateQ10, [eventJoin] = gotoStateQ12, [eventNewRange] = gotoStateQ15, [eventLeaving] = gotoStateQ16, [eventCloseConnection] = gotoStateQ17, [eventTimeout] = gotoStateQ6}, //Q9
 	[q7] = {[eventJoinResponse] = gotoStateQ8},
 	[q8] = {[eventDone] = gotoStateQ6},
 	[q9] = {[eventDone] = gotoStateQ6},																			  //Q6
@@ -37,7 +38,7 @@ int main(int argc, char **argv)
 	// nextState = gotoStateQ2(&netNode);
 	eSystemEvent newEvent;
 
-	while (nextState != q6)
+	while (nextState < q9)
 	{
 		// fprintf(stderr, "current state is: Q%d \n", nextState + 1);
 
@@ -121,7 +122,7 @@ static void exit_on_error_custom(const char *title, const char *detail)
 
 static eSystemEvent readEvent(struct NetNode *netNode)
 {
-	int timeoutMs = 2000;
+	int timeoutMs = 15000;
 	int returnValue;
 	unsigned char buffer[BUFF_SIZE];
 
@@ -192,6 +193,7 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 	else
 	{
 		fprintf(stderr, "timeout occured\n");
+		return eventTimeout;
 	}
 
 	return lastEvent;
@@ -247,6 +249,8 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 		memcpy(&joinResponse.next_port, &buffer[5], 2);
 		memcpy(&joinResponse.range_start, &buffer[7], 1);
 		memcpy(&joinResponse.range_end, &buffer[8], 1);
+		
+		print_buffer(buffer, 9);
 
 		netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
 		netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinResponse.next_address;
@@ -261,17 +265,18 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 		maxP = floor( (maxP - minP) / 2 ) + minP
 		minS = maxP + 1 
 		*/
-		int minP = joinResponse.range_start;
-		int maxP = joinResponse.range_end;
-		int maxS = maxP;
-		maxP = (int)((maxP - minP) / 2) + minP;
-		int minS = maxP + 1;
+		// int minP = joinResponse.range_start;
+		// int maxP = joinResponse.range_end;
+		// int maxS = maxP;
+		// maxP = (int)((maxP - minP) / 2) + minP;
+		// int minS = maxP + 1;
 
-		fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
-		fprintf(stderr, "minP: %d maxP: %d\n", minP, maxP);
+		// fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
+		// fprintf(stderr, "minP: %d maxP: %d\n", minP, maxP);
+		fprintf(stderr, "minS: %d maxS: %d\n", joinResponse.range_start, joinResponse.range_end);
 
-		netNode->nodeRange.min = minS;
-		netNode->nodeRange.max = maxS;
+		netNode->nodeRange.min = joinResponse.range_start;
+		netNode->nodeRange.max = joinResponse.range_end;
 
 		return eventJoinResponse;
 
@@ -454,13 +459,13 @@ eSystemState gotoStateQ7(struct NetNode *netNode)
 	memset(netJoinMessage, 0, sizeof(netJoinMessage));
 	size_t messageSize = sizeof(netJoinMessage);
 
-	//OKLART OM DETTA ÄR VAD SOM SKA SKICKAS
+	//OKLART OM DETTA ÄR VAD SOM SKA SKICKAS, (ENDAST INFO I TCP_C och UDP_A och UDP_A2)
 	struct NET_JOIN_PDU netJoin = {NET_JOIN,
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Src address
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_port,		   //Src port
-								   255,											   //Max span
-								   netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr, //Max address
-								   netNode->fdsAddr[UDP_SOCKET_A2].sin_port};	   //Max port
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Src address MIN
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_port,		   //Src port MIN
+								   255,											   //Max span Vilken range den största har
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Max address Den som har stört range
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_port};	   //Max port
 
 	memcpy(&netJoinMessage[0], &netJoin.type, 1);
 	memcpy(&netJoinMessage[1], &netJoin.src_address, 4);
@@ -468,10 +473,8 @@ eSystemState gotoStateQ7(struct NetNode *netNode)
 	memcpy(&netJoinMessage[7], &netJoin.max_span, 1);
 	memcpy(&netJoinMessage[8], &netJoin.max_address, 4);
 	memcpy(&netJoinMessage[12], &netJoin.max_port, 2);
-	for (int c = 0; c < 14; c++) {
-		fprintf(stderr, "%d ", netJoinMessage[c]);
-	}
-	fprintf(stderr, "\n");
+	
+	
 
 	socklen_t udpAddressLen = sizeof(netNode->fdsAddr[UDP_SOCKET_A2]);
 	if (sendto(netNode->fds[UDP_SOCKET_A2].fd, netJoinMessage, messageSize, 0, (struct sockaddr *) &netNode->fdsAddr[UDP_SOCKET_A2], udpAddressLen) == -1)
@@ -499,25 +502,40 @@ eSystemState gotoStateQ7(struct NetNode *netNode)
 
 eSystemState gotoStateQ8(struct NetNode *netNode)
 {
-	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (netNode->fds[TCP_SOCKET_B].fd == -1)
-	{
-		exit_on_error("socket error");
-	}
-
 	netNode->entries = list_create();
-	socklen_t addrLengthB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+	// fprintf(stderr, "UDP A: %s:%d\n", inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A].sin_addr), ntohs(netNode->fdsAddr[UDP_SOCKET_A].sin_port));
+	// fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
+	// fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
+	// fprintf(stderr, "TCP D: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_D].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_D].sin_port));
+	// fprintf(stderr, "UDP A2: %s:%d\n", inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A2].sin_addr), ntohs(netNode->fdsAddr[UDP_SOCKET_A2].sin_port));
 
-	int reuseaddr=1;
-	if (setsockopt(netNode->fds[TCP_SOCKET_B].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
-	{
-    	exit_on_error("setsockopt error");
-	}	
+	// if (netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr &&
+	// 		netNode->fdsAddr[TCP_SOCKET_B].sin_port == netNode->fdsAddr[TCP_SOCKET_D].sin_port) 
+	// {
+	// 	netNode->fds[TCP_SOCKET_B] = netNode->fds[TCP_SOCKET_D];
+	// }
+	// else
+	// {
+		netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (netNode->fds[TCP_SOCKET_B].fd == -1)
+		{
+			exit_on_error("socket error");
+		}
 
-	if (bind(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_B], addrLengthB) == -1)
-	{
-		exit_on_error("bind error TCP B");
-	}
+		// int reuseaddr=1;
+		// if (setsockopt(netNode->fds[TCP_SOCKET_B].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
+		// {
+		// 	exit_on_error("setsockopt error");
+		// }
+
+		socklen_t tcpAddrLenB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+		if (connect(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_B], tcpAddrLenB) == -1)
+		{
+			exit_on_error("connect error");
+		}
+		fprintf(stderr, "connect done\n");
+	// }
+
 	// fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
 
 	return q8;
@@ -597,4 +615,16 @@ void send_message_UDP(struct NetNode *netNode, int message, char *messageText, i
 
 void send_message_TCP()
 {
+}
+
+// static bool succSameAsPre() {
+// 	return joinResponse.next_address == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr &&
+// 			joinResponse.next_port == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr;
+// }
+
+static void print_buffer(unsigned char *buffer, int size) {
+	for (int c = 0; c < size; c++) {
+		fprintf(stderr, "%d ", buffer[c]);
+	}
+	fprintf(stderr, "\n");
 }

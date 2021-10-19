@@ -61,6 +61,7 @@ typedef enum {
     eventMaxNode, //Q12-Q13
     eventNotMaxNode, //Q12-14
     eventDone, //Q*->Q*
+    eventTimeout,
     lastEvent
 } eSystemEvent;
 
