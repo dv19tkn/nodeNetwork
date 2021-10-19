@@ -5,7 +5,8 @@
 #define TCP_SOCKET_B 1  // To succ.
 #define TCP_SOCKET_C 2  // Accept new TCP 
 #define TCP_SOCKET_D 3  // To pred.
-#define NO_SOCKETS 4
+#define UDP_SOCKET_A2 4 // Agent messages
+#define NO_SOCKETS 5
 
 #include <stdio.h>
 #include <stdlib.h>

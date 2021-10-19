@@ -15,15 +15,15 @@ static afEventHandler stateMachine = {
 	[q4] = {[eventDone] = gotoStateQ6},																																													//Q6
 	[q5] = {[eventDone] = gotoStateQ6},																																													//Q6
 	[q6] = {[eventInsertLookupRemove] = gotoStateQ9, [eventShutDown] = gotoStateQ10, [eventJoin] = gotoStateQ12, [eventNewRange] = gotoStateQ15, [eventLeaving] = gotoStateQ16, [eventCloseConnection] = gotoStateQ17}, //Q9
-	[q7] = {[eventJoin] = gotoStateQ8},
+	[q7] = {[eventJoinResponse] = gotoStateQ8},
 	[q8] = {[eventDone] = gotoStateQ6},
-	[q9] = {[eventDone] = gotoStateQ6},																																													//Q6
-	[q10] = {[eventConnected] = gotoStateQ11, [eventNotConnected] = exitState},																																			//Q11
-	[q11] = {[eventNewRangeResponse] = gotoStateQ18},																																									//Q18
-	[q12] = {[eventNotConnected] = gotoStateQ5, [eventMaxNode] = gotoStateQ13, [eventNotMaxNode] = gotoStateQ14},																										//Q5
-	[q18] = {[eventDone] = exitState},																																													//exit
-	[q13] = {[eventDone] = gotoStateQ6},																																												//Q6
-	[q14] = {[eventDone] = gotoStateQ6}																																													//Q6
+	[q9] = {[eventDone] = gotoStateQ6},																			  //Q6
+	[q10] = {[eventConnected] = gotoStateQ11, [eventNotConnected] = exitState},									  //Q11
+	[q11] = {[eventNewRangeResponse] = gotoStateQ18},															  //Q18
+	[q12] = {[eventNotConnected] = gotoStateQ5, [eventMaxNode] = gotoStateQ13, [eventNotMaxNode] = gotoStateQ14}, //Q5
+	[q18] = {[eventDone] = exitState},																			  //exit
+	[q13] = {[eventDone] = gotoStateQ6},																		  //Q6
+	[q14] = {[eventDone] = gotoStateQ6}																			  //Q6
 };
 
 int main(int argc, char **argv)
@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 
 	while (nextState != q6)
 	{
-		fprintf(stderr, "current state is: Q%d \n", nextState + 1);
+		// fprintf(stderr, "current state is: Q%d \n", nextState + 1);
 
 		if (nextState == q1 || nextState == q4 || nextState == q8) //No events for these states
 		{
@@ -78,11 +78,12 @@ int main(int argc, char **argv)
 		if ((nextState < lastState) && (newEvent < lastEvent) && stateMachine[nextState][newEvent] != NULL)
 		{
 			nextState = (*stateMachine[nextState][newEvent])(&netNode);
-			fprintf(stderr, "next state: Q%d\n", nextState + 1);
+			fprintf(stderr, "current state: Q%d\n", nextState + 1);
 		}
 		else
 		{
 			fprintf(stderr, "invalid state Q%d or event E%d\n", nextState + 1, newEvent + 1);
+			break;
 		}
 	}
 
@@ -90,7 +91,10 @@ int main(int argc, char **argv)
 	close(netNode.fds[TCP_SOCKET_B].fd);
 	close(netNode.fds[TCP_SOCKET_C].fd);
 	close(netNode.fds[TCP_SOCKET_D].fd);
-	list_destroy(netNode.entries);
+	if (netNode.entries != NULL)
+	{
+		list_destroy(netNode.entries);
+	}
 	fprintf(stderr, "exiting node\n");
 	return 0;
 }
@@ -121,10 +125,11 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 	int returnValue;
 	unsigned char buffer[BUFF_SIZE];
 
-	netNode->fds[UDP_SOCKET_A].events = POLLIN;
-	netNode->fds[TCP_SOCKET_B].events = POLLIN;
+	netNode->fds[UDP_SOCKET_A].events = POLLIN; // | POLLOUT;
+	netNode->fds[TCP_SOCKET_B].events = POLLIN; // | POLLOUT;
 	netNode->fds[TCP_SOCKET_C].events = POLLIN;
-	netNode->fds[TCP_SOCKET_D].events = POLLIN;
+	netNode->fds[TCP_SOCKET_D].events = POLLIN;	 // | POLLOUT;
+	netNode->fds[UDP_SOCKET_A2].events = POLLIN; // | POLLOUT;
 
 	returnValue = poll(netNode->fds, NO_SOCKETS, timeoutMs);
 
@@ -139,48 +144,50 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 		{
 			if (netNode->fds[i].revents & POLLIN)
 			{
-				fprintf(stderr, "1. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "1. data received on %d, return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 				read(netNode->fds[i].fd, buffer, BUFF_SIZE);
 			}
 			if (netNode->fds[i].revents & POLLRDNORM)
 			{
-				fprintf(stderr, "2. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "2. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLRDBAND)
 			{
-				fprintf(stderr, "3. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "3. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLPRI)
 			{
-				fprintf(stderr, "4. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "4. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLOUT)
 			{
-				fprintf(stderr, "5. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "5. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLWRNORM)
 			{
-				fprintf(stderr, "6. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "6. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLWRBAND)
 			{
-				fprintf(stderr, "7. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "7. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLERR) //Error
 			{
-				fprintf(stderr, "8. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "8. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 			if (netNode->fds[i].revents & POLLHUP) //Hang up
 			{
-				fprintf(stderr, "9. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "9. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
+				read(netNode->fds[i].fd, buffer, BUFF_SIZE);
 			}
 			if (netNode->fds[i].revents & POLLNVAL)
 			{
-				fprintf(stderr, "10. data received on %d , return value is: %d\n", i, returnValue);
+				fprintf(stderr, "10. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
 			}
 		}
 
-		return find_right_event(netNode, buffer); //VAD HÄNDER OM DET FINNS FLER MEDDELANDEN PÅ VÄG?
+		eSystemEvent nextEvent = find_right_event(netNode, buffer); //VAD HÄNDER OM DET FINNS FLER MEDDELANDEN PÅ VÄG?
+		return nextEvent;
 	}
 	else
 	{
@@ -195,20 +202,21 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 	struct STUN_RESPONSE_PDU response;
 	struct NET_GET_NODE_RESPONSE_PDU getNodeResponse;
 	struct NET_JOIN_RESPONSE_PDU joinResponse;
-	struct NET_JOIN_PDU join;
 	struct sockaddr_in preNodeAddress;
 
-	fprintf(stderr, "BUFFER 0: %d\n", buffer[0]);
+	fprintf(stderr, "buffer[0]: %d\n", buffer[0]);
 
 	switch (buffer[0]) //Antag att första byten är vilken typ av meddelande vi får
 	{
 	case STUN_RESPONSE:
+		fprintf(stderr, "stun_response received\n");
 		memcpy(&response.type, &buffer[0], 1);
 		memcpy(&response.address, &buffer[1], 4);
-		fprintf(stderr, "type: %d, address: %d\n", response.type, response.address);
+		// fprintf(stderr, "type: %d, address: %d\n", response.type, response.address);
 		return eventStunResponse;
 
 	case NET_GET_NODE_RESPONSE:
+		fprintf(stderr, "net_get_node_response received\n");
 		memcpy(&getNodeResponse.type, &buffer[0], 1);
 		memcpy(&getNodeResponse.address, &buffer[1], 4);
 		memcpy(&getNodeResponse.port, &buffer[5], 2);
@@ -225,14 +233,15 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 		}
 		else
 		{
-			netNode->fdsAddr[TCP_SOCKET_C].sin_family = AF_INET;
-			netNode->fdsAddr[TCP_SOCKET_C].sin_port = getNodeResponse.port;
-			netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr = getNodeResponse.address;
+			netNode->fdsAddr[UDP_SOCKET_A2].sin_family = AF_INET;
+			netNode->fdsAddr[UDP_SOCKET_A2].sin_port = preNodeAddress.sin_port;
+			netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr = preNodeAddress.sin_addr.s_addr;
 			fprintf(stderr, "received address: %s:%d\n", inet_ntoa(preNodeAddress.sin_addr), ntohs(preNodeAddress.sin_port));
 			return eventNodeResponse;
 		}
 
 	case NET_JOIN_RESPONSE:
+		fprintf(stderr, "net_join_response received\n");
 		memcpy(&joinResponse.type, &buffer[0], 1);
 		memcpy(&joinResponse.next_address, &buffer[1], 4);
 		memcpy(&joinResponse.next_port, &buffer[5], 2);
@@ -242,30 +251,56 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 		netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
 		netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinResponse.next_address;
 		netNode->fdsAddr[TCP_SOCKET_B].sin_port = joinResponse.next_port;
-		netNode->nodeRange.min = joinResponse.range_start;
-		netNode->nodeRange.max = joinResponse.range_end;
+
+		/* 
+		Calculate new hash range
+		predecessor = node in response
+		successor = this node
+		minP = minP
+		maxS = maxP
+		maxP = floor( (maxP - minP) / 2 ) + minP
+		minS = maxP + 1 
+		*/
+		int minP = joinResponse.range_start;
+		int maxP = joinResponse.range_end;
+		int maxS = maxP;
+		maxP = (int)((maxP - minP) / 2) + minP;
+		int minS = maxP + 1;
+
+		fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
+		fprintf(stderr, "minP: %d maxP: %d\n", minP, maxP);
+
+		netNode->nodeRange.min = minS;
+		netNode->nodeRange.max = maxS;
 
 		return eventJoinResponse;
 
 	case VAL_INSERT || VAL_LOOKUP || VAL_REMOVE: // FUNKAR DETTA? LOL
+		fprintf(stderr, "val insert | val lookup | val remove received\n");
 		return eventInsertLookupRemove;
 
 	case NET_JOIN:
+		fprintf(stderr, "net join received\n");
 		return eventJoin;
 
 	case NET_NEW_RANGE:
+		fprintf(stderr, "net new range received\n");
 		return eventNewRange;
 
 	case NET_LEAVING:
+		fprintf(stderr, "net leaving received\n");
 		return eventLeaving;
 
 	case NET_CLOSE_CONNECTION:
+		fprintf(stderr, "net close connection received\n");
 		return eventCloseConnection;
 
 	case NET_NEW_RANGE_RESPONSE:
+		fprintf(stderr, "net new range received\n");
 		return eventNewRangeResponse;
 
 	default:
+		fprintf(stderr, "unknown response\n");
 		return lastEvent; //ÄNDRA DETTA(?)
 	}
 }
@@ -276,15 +311,16 @@ eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 
 	//Set up udp socket to tracker
 	netNode->fds[UDP_SOCKET_A].fd = socket(AF_INET, SOCK_DGRAM, 0);
-	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
-	netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
-	netNode->fds[TCP_SOCKET_D].fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (netNode->fds[UDP_SOCKET_A].fd == -1 || netNode->fds[TCP_SOCKET_B].fd == -1 ||
-		netNode->fds[TCP_SOCKET_C].fd == -1 || netNode->fds[TCP_SOCKET_D].fd == -1)
+	// netNode->fds[UDP_SOCKET_A].events = POLLIN; // | POLLOUT;
+	// netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+	// netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
+	// netNode->fds[TCP_SOCKET_D].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[UDP_SOCKET_A].fd == -1) // || netNode->fds[TCP_SOCKET_B].fd == -1 ||
+											 // netNode->fds[TCP_SOCKET_C].fd == -1 || netNode->fds[TCP_SOCKET_D].fd == -1)
 	{
 		exit_on_error("socket error");
 	}
-	fprintf(stderr, "socket created fd: %d\n", netNode->fds[UDP_SOCKET_A].fd);
+	// fprintf(stderr, "socket created fd: %d\n", netNode->fds[UDP_SOCKET_A].fd);
 
 	//Read arguments to trackerAddress
 	socklen_t UDPAddressLen = sizeof(netNode->fdsAddr[UDP_SOCKET_A]);
@@ -294,7 +330,7 @@ eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 	{
 		exit_on_error_custom("inet_aton", argv[1]);
 	}
-	fprintf(stderr, "adress set\n");
+	// fprintf(stderr, "adress set\n");
 
 	//get the set address in host byte order and print to verify
 	eCheckString = inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A].sin_addr);
@@ -302,13 +338,13 @@ eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 	{
 		exit_on_error("inet_ntoa");
 	}
-	fprintf(stderr, "tracker address created: %s:%d\n", eCheckString, ntohs(netNode->fdsAddr[UDP_SOCKET_A].sin_port));
+	// fprintf(stderr, "tracker address created: %s:%d\n", eCheckString, ntohs(netNode->fdsAddr[UDP_SOCKET_A].sin_port));
 
 	//Send STUN_LOOKUP
 	unsigned char lookupMessage[1];
 	memset(lookupMessage, 0, sizeof(lookupMessage));
 	size_t lookupSize = sizeof(lookupMessage);
-	fprintf(stderr, "size message: %ld\n", lookupSize);
+	// fprintf(stderr, "size message: %ld\n", lookupSize);
 
 	lookupMessage[0] = STUN_LOOKUP;
 
@@ -316,7 +352,7 @@ eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 	{
 		exit_on_error("send stun lookup error");
 	}
-	fprintf(stderr, "stun lookup sent: %s\n", lookupMessage);
+	fprintf(stderr, "stun lookup sent: %d\n", lookupMessage[0]);
 
 	return q1;
 }
@@ -373,72 +409,116 @@ eSystemState gotoStateQ6(struct NetNode *netNode)
 		exit_on_error("send net alive error");
 	}
 	fprintf(stderr, "net alive sent: %d\n", netAliveMessage[0]);
-	
+
 	return q6;
 }
 
 eSystemState gotoStateQ7(struct NetNode *netNode)
 {
+	netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
+	// netNode->fds[TCP_SOCKET_C].events = POLLIN | POLLOUT;
+
+	netNode->fds[UDP_SOCKET_A2].fd = socket(AF_INET, SOCK_DGRAM, 0);
+	// netNode->fds[UDP_SOCKET_A2].events = POLLIN;
+	if (netNode->fds[UDP_SOCKET_A2].fd == -1 || netNode->fds[TCP_SOCKET_C].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
+
+	//init TCP C address
+	memset(&netNode->fdsAddr[TCP_SOCKET_C], 0, sizeof(netNode->fdsAddr[TCP_SOCKET_C]));
+	netNode->fdsAddr[TCP_SOCKET_C].sin_family = AF_INET;
+	netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr = htonl(INADDR_ANY);
+	netNode->fdsAddr[TCP_SOCKET_C].sin_port = 0;
+
+	int reuseaddr=1;
+	if (setsockopt(netNode->fds[TCP_SOCKET_C].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
+	{
+    	exit_on_error("setsockopt error");
+	}	
+
+	socklen_t addrLengthC = sizeof(netNode->fdsAddr[TCP_SOCKET_C]);
+	if (bind(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_C], addrLengthC) == -1)
+	{
+		exit_on_error("bind error TCP C");
+	}
+
+	if (getsockname(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_C], &addrLengthC) == -1)
+	{
+		exit_on_error("getsockname error");
+	}
+	fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
+
 	//Send NET_JOIN
 	unsigned char netJoinMessage[14];
 	memset(netJoinMessage, 0, sizeof(netJoinMessage));
 	size_t messageSize = sizeof(netJoinMessage);
 
-	socklen_t addrLengthC = sizeof(netNode->fdsAddr[TCP_SOCKET_C]);
+	//OKLART OM DETTA ÄR VAD SOM SKA SKICKAS
+	struct NET_JOIN_PDU netJoin = {NET_JOIN,
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Src address
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_port,		   //Src port
+								   255,											   //Max span
+								   netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr, //Max address
+								   netNode->fdsAddr[UDP_SOCKET_A2].sin_port};	   //Max port
 
-	//init TCP D address
-	netNode->fdsAddr[TCP_SOCKET_D].sin_family = AF_INET;
-	netNode->fdsAddr[TCP_SOCKET_D].sin_port = 0;
-	netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr = htonl(INADDR_ANY);
-	socklen_t addrLengthD = sizeof(netNode->fdsAddr[TCP_SOCKET_D]);
+	memcpy(&netJoinMessage[0], &netJoin.type, 1);
+	memcpy(&netJoinMessage[1], &netJoin.src_address, 4);
+	memcpy(&netJoinMessage[5], &netJoin.src_port, 2);
+	memcpy(&netJoinMessage[7], &netJoin.max_span, 1);
+	memcpy(&netJoinMessage[8], &netJoin.max_address, 4);
+	memcpy(&netJoinMessage[12], &netJoin.max_port, 2);
+	for (int c = 0; c < 14; c++) {
+		fprintf(stderr, "%d ", netJoinMessage[c]);
+	}
+	fprintf(stderr, "\n");
 
-	struct NET_JOIN_PDU netJoin = {NET_JOIN, netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr,
-								   netNode->fdsAddr[TCP_SOCKET_D].sin_port, 255, netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr,
-								   netNode->fdsAddr[TCP_SOCKET_D].sin_port}; //OKLART OM DETTA ÄR VAD SOM SKA SKICKAS
-
-	memcpy(&netJoinMessage[0], &netJoin, 1);
-	memcpy(&netJoinMessage[1], &netJoin, 4);
-	memcpy(&netJoinMessage[5], &netJoin, 2);
-	memcpy(&netJoinMessage[7], &netJoin, 1);
-	memcpy(&netJoinMessage[8], &netJoin, 4);
-	memcpy(&netJoinMessage[12], &netJoin, 2);
-
-	if (bind(netNode->fds[TCP_SOCKET_D].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_D], addrLengthD) == -1)
+	socklen_t udpAddressLen = sizeof(netNode->fdsAddr[UDP_SOCKET_A2]);
+	if (sendto(netNode->fds[UDP_SOCKET_A2].fd, netJoinMessage, messageSize, 0, (struct sockaddr *) &netNode->fdsAddr[UDP_SOCKET_A2], udpAddressLen) == -1)
 	{
-		exit_on_error("bind error TCP D");
+		exit_on_error("send net join error");
 	}
-	if (bind(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_C], addrLengthC) == -1)
-	{
-		exit_on_error("bind error TCP C");
-	}
-	fprintf(stderr, "FD TCP C: %d \n", netNode->fds[TCP_SOCKET_C].fd);
-	fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
-	fprintf(stderr, "TCP D: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_D].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_D].sin_port));
+	fprintf(stderr, "net join sent: %d\n", netJoinMessage[0]);
 
-	if (connect(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_C], addrLengthC) == -1) {
-		exit_on_error("connect error TCP C");
-	}
-	fprintf(stderr, "after connect\n");
-
-	if (send(netNode->fds[TCP_SOCKET_C].fd, netJoinMessage, messageSize, 0) == -1)
+	if (listen(netNode->fds[TCP_SOCKET_C].fd, 2) == -1)
 	{
-		exit_on_error("send net get node error");
+		exit_on_error("listen error");
 	}
-	fprintf(stderr, "net get node sent: %d\n", netJoinMessage[0]);
+	fprintf(stderr, "listen done\n");
+	
+	socklen_t preNodeLen = sizeof(netNode->fdsAddr[TCP_SOCKET_D]);
+	netNode->fds[TCP_SOCKET_D].fd = accept(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_D], &preNodeLen);
+	if (netNode->fds[TCP_SOCKET_D].fd == -1)
+	{
+		exit_on_error("accept error");
+	}
+	fprintf(stderr, "accept done\n");
 
 	return q7;
 }
 
 eSystemState gotoStateQ8(struct NetNode *netNode)
 {
+	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[TCP_SOCKET_B].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
+
 	netNode->entries = list_create();
 	socklen_t addrLengthB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+
+	int reuseaddr=1;
+	if (setsockopt(netNode->fds[TCP_SOCKET_B].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
+	{
+    	exit_on_error("setsockopt error");
+	}	
 
 	if (bind(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_B], addrLengthB) == -1)
 	{
 		exit_on_error("bind error TCP B");
 	}
-	fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
+	// fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
 
 	return q8;
 }
@@ -498,7 +578,7 @@ eSystemState exitState(struct NetNode *netNode)
 	return lastState;
 }
 
-void send_message_UDP(struct NetNode *netNode, int message, char *messageText, int UDP_socket_index) 
+void send_message_UDP(struct NetNode *netNode, int message, char *messageText, int UDP_socket_index)
 {
 	unsigned char messageBuffer[1];
 	memset(messageBuffer, 0, sizeof(messageBuffer));
@@ -506,16 +586,15 @@ void send_message_UDP(struct NetNode *netNode, int message, char *messageText, i
 	socklen_t addrLength = sizeof(netNode->fdsAddr[UDP_socket_index]);
 
 	messageBuffer[0] = message;
-	if (sendto(netNode->fds[UDP_socket_index].fd, messageBuffer, messageSize, 0, (struct sockaddr *) &netNode->fdsAddr[UDP_socket_index], addrLength) == -1)
+	if (sendto(netNode->fds[UDP_socket_index].fd, messageBuffer, messageSize, 0, (struct sockaddr *)&netNode->fdsAddr[UDP_socket_index], addrLength) == -1)
 	{
 		char errorMsg[200] = {"Error: "};
 		strcat(errorMsg, messageText);
 		exit_on_error(errorMsg);
 	}
-	fprintf(stderr, "%s sent: %d\n", messageText, messageBuffer[0]);
+	// fprintf(stderr, "%s sent: %d\n", messageText, messageBuffer[0]);
 }
 
 void send_message_TCP()
 {
-
 }
