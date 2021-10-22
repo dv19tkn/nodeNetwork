@@ -75,6 +75,7 @@ struct NetNode {
     struct sockaddr_in fdsAddr[NO_SOCKETS];
     List *entries;
     Range nodeRange;
+    unsigned char *pduMessage;
 };
 
 typedef eSystemState(*const afEventHandler[lastState][lastEvent])(struct NetNode *netNode);

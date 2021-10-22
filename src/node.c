@@ -6,15 +6,24 @@ static void check_params(int argc);
 static void exit_on_error(const char *title);
 static void exit_on_error_custom(const char *title, const char *detail);
 static eSystemEvent readEvent(struct NetNode *netnode);
-static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer);
+static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer, ssize_t buffSize);
 static void print_buffer(unsigned char *buffer, int size);
+static void fprint_address(struct NetNode *netNode, int socket);
+static bool nodeConnected(struct NetNode *netNode);
+static void initTCPSocketC(struct NetNode *netNode);
+static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode);
+static void writeNetJoinMessage(unsigned char *destMessage, struct NetNode *netNode);
+static struct NET_JOIN_PDU readNetJoinMessage(unsigned char *message);
+static struct NET_JOIN_RESPONSE_PDU readNetJoinResponse(unsigned char *message);
+static struct NET_GET_NODE_RESPONSE_PDU readNetGetNodeResponse(unsigned char *message);
+static void fprint_all_sockets(struct NetNode *netNode);
 
 static afEventHandler stateMachine = {
 	[q1] = {[eventDone] = gotoStateQ2},			//Q2
 	[q2] = {[eventStunResponse] = gotoStateQ3}, //Q3
 	[q3] = {[eventNodeResponse] = gotoStateQ7, [eventNodeResponseEmpty] = gotoStateQ4},
-	[q4] = {[eventDone] = gotoStateQ6},																																													//Q6
-	[q5] = {[eventDone] = gotoStateQ6},																																													//Q6
+	[q4] = {[eventDone] = gotoStateQ6},																																																				  //Q6
+	[q5] = {[eventDone] = gotoStateQ6},																																																				  //Q6
 	[q6] = {[eventInsertLookupRemove] = gotoStateQ9, [eventShutDown] = gotoStateQ10, [eventJoin] = gotoStateQ12, [eventNewRange] = gotoStateQ15, [eventLeaving] = gotoStateQ16, [eventCloseConnection] = gotoStateQ17, [eventTimeout] = gotoStateQ6}, //Q9
 	[q7] = {[eventJoinResponse] = gotoStateQ8},
 	[q8] = {[eventDone] = gotoStateQ6},
@@ -33,32 +42,43 @@ int main(int argc, char **argv)
 
 	struct NetNode netNode = {};
 	memset(&netNode, 0, sizeof(netNode));
+	netNode.pduMessage = calloc(BUFF_SIZE, sizeof(unsigned char));
+	if (netNode.pduMessage == NULL) {
+		exit_on_error("calloc error");
+	}
 
 	eSystemState nextState = gotoStateQ1(&netNode, argv);
-	// nextState = gotoStateQ2(&netNode);
 	eSystemEvent newEvent;
 
-	while (nextState < q9)
+	while (nextState < q13)
 	{
-		// fprintf(stderr, "current state is: Q%d \n", nextState + 1);
-
-		if (nextState == q1 || nextState == q4 || nextState == q8) //No events for these states
+		//No events for these states
+		if (nextState == q1 || nextState == q4 || nextState == q8 || nextState == q5) 
 		{
+			fprintf(stderr, "event done\n");
 			newEvent = eventDone;
 		}
 		else if (nextState == q12)
 		{
-			if (true) //node not connected
+			if (!nodeConnected(&netNode)) //node not connected
 			{
+				fprintf(stderr, "event not connected\n");
 				newEvent = eventNotConnected;
 			}
-			else if (true) // node = max_node
+			else 
 			{
+				//node = max_node
+				if ((netNode.nodeRange.max - netNode.nodeRange.min) == netNode.pduMessage[7])
+				{
+					fprintf(stderr, "event max node\n");
+					newEvent = eventMaxNode;
+				}
+				else //node != max_node
+				{
+					fprintf(stderr, "event not max node\n");
+					newEvent = eventNotMaxNode;
+				}
 			}
-			else // node != max_node
-			{
-			}
-			newEvent = eventDone;
 		}
 		else if (nextState == q10)
 		{
@@ -96,6 +116,7 @@ int main(int argc, char **argv)
 	{
 		list_destroy(netNode.entries);
 	}
+	free(netNode.pduMessage);
 	fprintf(stderr, "exiting node\n");
 	return 0;
 }
@@ -125,6 +146,8 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 	int timeoutMs = 15000;
 	int returnValue;
 	unsigned char buffer[BUFF_SIZE];
+	memset(buffer, 0, BUFF_SIZE);
+	ssize_t bytesRead;
 
 	netNode->fds[UDP_SOCKET_A].events = POLLIN; // | POLLOUT;
 	netNode->fds[TCP_SOCKET_B].events = POLLIN; // | POLLOUT;
@@ -146,7 +169,7 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 			if (netNode->fds[i].revents & POLLIN)
 			{
 				fprintf(stderr, "1. data received on %d, return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
-				read(netNode->fds[i].fd, buffer, BUFF_SIZE);
+				bytesRead = read(netNode->fds[i].fd, buffer, BUFF_SIZE);
 			}
 			if (netNode->fds[i].revents & POLLRDNORM)
 			{
@@ -179,7 +202,7 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 			if (netNode->fds[i].revents & POLLHUP) //Hang up
 			{
 				fprintf(stderr, "9. data received on %d , return value is: %d, fd: %d\n", i, returnValue, netNode->fds[i].fd);
-				read(netNode->fds[i].fd, buffer, BUFF_SIZE);
+				// bytesRead = read(netNode->fds[i].fd, buffer, BUFF_SIZE);
 			}
 			if (netNode->fds[i].revents & POLLNVAL)
 			{
@@ -187,7 +210,7 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 			}
 		}
 
-		eSystemEvent nextEvent = find_right_event(netNode, buffer); //VAD HÄNDER OM DET FINNS FLER MEDDELANDEN PÅ VÄG?
+		eSystemEvent nextEvent = find_right_event(netNode, buffer, bytesRead); //VAD HÄNDER OM DET FINNS FLER MEDDELANDEN PÅ VÄG?
 		return nextEvent;
 	}
 	else
@@ -199,93 +222,51 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 	return lastEvent;
 }
 
-static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer)
+static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer, ssize_t buffSize)
 {
-	struct STUN_RESPONSE_PDU response;
 	struct NET_GET_NODE_RESPONSE_PDU getNodeResponse;
-	struct NET_JOIN_RESPONSE_PDU joinResponse;
-	struct sockaddr_in preNodeAddress;
-
-	fprintf(stderr, "buffer[0]: %d\n", buffer[0]);
 
 	switch (buffer[0]) //Antag att första byten är vilken typ av meddelande vi får
 	{
 	case STUN_RESPONSE:
 		fprintf(stderr, "stun_response received\n");
-		memcpy(&response.type, &buffer[0], 1);
-		memcpy(&response.address, &buffer[1], 4);
-		// fprintf(stderr, "type: %d, address: %d\n", response.type, response.address);
+
+		memcpy(netNode->pduMessage, buffer, buffSize);
 		return eventStunResponse;
 
 	case NET_GET_NODE_RESPONSE:
 		fprintf(stderr, "net_get_node_response received\n");
-		memcpy(&getNodeResponse.type, &buffer[0], 1);
-		memcpy(&getNodeResponse.address, &buffer[1], 4);
-		memcpy(&getNodeResponse.port, &buffer[5], 2);
 
-		memset(&preNodeAddress, 0, sizeof(preNodeAddress));
-		preNodeAddress.sin_family = AF_INET;
-		preNodeAddress.sin_port = getNodeResponse.port;
-		preNodeAddress.sin_addr.s_addr = getNodeResponse.address;
-
-		if (preNodeAddress.sin_port == 0 && preNodeAddress.sin_addr.s_addr == 0)
+		memcpy(netNode->pduMessage, buffer, buffSize);
+		getNodeResponse = readNetGetNodeResponse(netNode->pduMessage);
+		if (getNodeResponse.address == 0 && getNodeResponse.port == 0)
 		{
 			fprintf(stderr, "got empty reponse\n");
 			return eventNodeResponseEmpty;
 		}
 		else
 		{
-			netNode->fdsAddr[UDP_SOCKET_A2].sin_family = AF_INET;
-			netNode->fdsAddr[UDP_SOCKET_A2].sin_port = preNodeAddress.sin_port;
-			netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr = preNodeAddress.sin_addr.s_addr;
-			fprintf(stderr, "received address: %s:%d\n", inet_ntoa(preNodeAddress.sin_addr), ntohs(preNodeAddress.sin_port));
+			fprintf(stderr, "got NOT empty response\n");
 			return eventNodeResponse;
 		}
 
 	case NET_JOIN_RESPONSE:
 		fprintf(stderr, "net_join_response received\n");
-		memcpy(&joinResponse.type, &buffer[0], 1);
-		memcpy(&joinResponse.next_address, &buffer[1], 4);
-		memcpy(&joinResponse.next_port, &buffer[5], 2);
-		memcpy(&joinResponse.range_start, &buffer[7], 1);
-		memcpy(&joinResponse.range_end, &buffer[8], 1);
 		
-		print_buffer(buffer, 9);
-
-		netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
-		netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinResponse.next_address;
-		netNode->fdsAddr[TCP_SOCKET_B].sin_port = joinResponse.next_port;
-
-		/* 
-		Calculate new hash range
-		predecessor = node in response
-		successor = this node
-		minP = minP
-		maxS = maxP
-		maxP = floor( (maxP - minP) / 2 ) + minP
-		minS = maxP + 1 
-		*/
-		// int minP = joinResponse.range_start;
-		// int maxP = joinResponse.range_end;
-		// int maxS = maxP;
-		// maxP = (int)((maxP - minP) / 2) + minP;
-		// int minS = maxP + 1;
-
-		// fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
-		// fprintf(stderr, "minP: %d maxP: %d\n", minP, maxP);
-		fprintf(stderr, "minS: %d maxS: %d\n", joinResponse.range_start, joinResponse.range_end);
-
-		netNode->nodeRange.min = joinResponse.range_start;
-		netNode->nodeRange.max = joinResponse.range_end;
+		memcpy(netNode->pduMessage, buffer, buffSize);
 
 		return eventJoinResponse;
 
 	case VAL_INSERT || VAL_LOOKUP || VAL_REMOVE: // FUNKAR DETTA? LOL
 		fprintf(stderr, "val insert | val lookup | val remove received\n");
+		
 		return eventInsertLookupRemove;
 
 	case NET_JOIN:
 		fprintf(stderr, "net join received\n");
+
+		memcpy(netNode->pduMessage, buffer, buffSize);
+
 		return eventJoin;
 
 	case NET_NEW_RANGE:
@@ -312,20 +293,12 @@ static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buf
 
 eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 {
-	char *eCheckString;
-
 	//Set up udp socket to tracker
 	netNode->fds[UDP_SOCKET_A].fd = socket(AF_INET, SOCK_DGRAM, 0);
-	// netNode->fds[UDP_SOCKET_A].events = POLLIN; // | POLLOUT;
-	// netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
-	// netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
-	// netNode->fds[TCP_SOCKET_D].fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (netNode->fds[UDP_SOCKET_A].fd == -1) // || netNode->fds[TCP_SOCKET_B].fd == -1 ||
-											 // netNode->fds[TCP_SOCKET_C].fd == -1 || netNode->fds[TCP_SOCKET_D].fd == -1)
+	if (netNode->fds[UDP_SOCKET_A].fd == -1)
 	{
 		exit_on_error("socket error");
 	}
-	// fprintf(stderr, "socket created fd: %d\n", netNode->fds[UDP_SOCKET_A].fd);
 
 	//Read arguments to trackerAddress
 	socklen_t UDPAddressLen = sizeof(netNode->fdsAddr[UDP_SOCKET_A]);
@@ -335,24 +308,13 @@ eSystemState gotoStateQ1(struct NetNode *netNode, char **argv)
 	{
 		exit_on_error_custom("inet_aton", argv[1]);
 	}
-	// fprintf(stderr, "adress set\n");
-
-	//get the set address in host byte order and print to verify
-	eCheckString = inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A].sin_addr);
-	if (eCheckString == NULL)
-	{
-		exit_on_error("inet_ntoa");
-	}
-	// fprintf(stderr, "tracker address created: %s:%d\n", eCheckString, ntohs(netNode->fdsAddr[UDP_SOCKET_A].sin_port));
 
 	//Send STUN_LOOKUP
 	unsigned char lookupMessage[1];
 	memset(lookupMessage, 0, sizeof(lookupMessage));
 	size_t lookupSize = sizeof(lookupMessage);
-	// fprintf(stderr, "size message: %ld\n", lookupSize);
 
 	lookupMessage[0] = STUN_LOOKUP;
-
 	if (sendto(netNode->fds[UDP_SOCKET_A].fd, lookupMessage, lookupSize, 0, (struct sockaddr *)&netNode->fdsAddr[UDP_SOCKET_A], UDPAddressLen) == -1)
 	{
 		exit_on_error("send stun lookup error");
@@ -376,11 +338,12 @@ eSystemState gotoStateQ3(struct NetNode *netNode)
 	socklen_t addrLength = sizeof(netNode->fdsAddr[UDP_SOCKET_A]);
 
 	getNodeMessage[0] = NET_GET_NODE;
-	if (sendto(netNode->fds[UDP_SOCKET_A].fd, getNodeMessage, messageSize, 0, (struct sockaddr *)&netNode->fdsAddr[UDP_SOCKET_A], addrLength) == -1)
+	if (sendto(netNode->fds[UDP_SOCKET_A].fd, getNodeMessage, messageSize, 0, (struct sockaddr *) &netNode->fdsAddr[UDP_SOCKET_A], addrLength) == -1)
 	{
 		exit_on_error("send net get node error");
 	}
-	fprintf(stderr, "net get node sent: %d\n", getNodeMessage[0]);
+	fprintf(stderr, "net get node sent: ");
+	print_buffer(getNodeMessage, messageSize);
 
 	return q3;
 }
@@ -389,7 +352,7 @@ eSystemState gotoStateQ4(struct NetNode *netNode)
 {
 	// Vi behöver lista för Q9 och Range för Q15
 	netNode->nodeRange.min = 0;
-	netNode->nodeRange.max = 255;
+	netNode->nodeRange.max = 0;
 	netNode->entries = list_create();
 
 	return q4;
@@ -397,6 +360,59 @@ eSystemState gotoStateQ4(struct NetNode *netNode)
 
 eSystemState gotoStateQ5(struct NetNode *netNode)
 {
+	//Node not connected, connect to successor
+	//Connect to src address in message and store connection as succ address
+	struct NET_JOIN_PDU joinRequest = readNetJoinMessage(netNode->pduMessage);
+	netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinRequest.src_address;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_port = joinRequest.src_port;
+	socklen_t addrLenB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+
+	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[TCP_SOCKET_B].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
+
+	if (connect(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_B], addrLenB) == -1)
+	{
+		exit_on_error("connect error");
+	}
+
+	// Open socket
+	if (netNode->fds[TCP_SOCKET_C].fd == 0) //Socket C not initialized yet
+	{
+		fprintf(stderr, "init TCP C\n");
+		initTCPSocketC(netNode);
+	}
+
+	//Send NET_JOIN_RESPONSE
+	unsigned char netJoinResponseMessage[9];
+	size_t messageSize = sizeof(netJoinResponseMessage);
+	memset(netJoinResponseMessage, 0, messageSize);
+	writeNetJoinResponse(netJoinResponseMessage, netNode);
+
+	if (send(netNode->fds[TCP_SOCKET_B].fd, netJoinResponseMessage, messageSize, 0) == -1)
+	{
+		exit_on_error("send error");
+	}
+
+	//Transfer upper half of entry-range to succ //NEED TO BE DONE
+
+	// Accept predecessor (same as succ)
+	if (listen(netNode->fds[TCP_SOCKET_C].fd, 2) == -1)
+	{
+		exit_on_error("listen error");
+	}
+
+	socklen_t addrLenC = sizeof(netNode->fdsAddr[TCP_SOCKET_C]);
+	netNode->fds[TCP_SOCKET_D].fd = accept(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_C], &addrLenC);
+	if (netNode->fds[TCP_SOCKET_D].fd == -1)
+	{
+		exit_on_error("accept error");
+	}
+	fprint_all_sockets(netNode);
+
 	return q5;
 }
 
@@ -404,8 +420,8 @@ eSystemState gotoStateQ6(struct NetNode *netNode)
 {
 	//Send NET_ALIVE
 	unsigned char netAliveMessage[1];
-	memset(netAliveMessage, 0, sizeof(netAliveMessage));
 	size_t messageSize = sizeof(netAliveMessage);
+	memset(netAliveMessage, 0, messageSize);
 	socklen_t addrLength = sizeof(netNode->fdsAddr[UDP_SOCKET_A]);
 
 	netAliveMessage[0] = NET_ALIVE;
@@ -420,75 +436,39 @@ eSystemState gotoStateQ6(struct NetNode *netNode)
 
 eSystemState gotoStateQ7(struct NetNode *netNode)
 {
-	netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
-	// netNode->fds[TCP_SOCKET_C].events = POLLIN | POLLOUT;
-
 	netNode->fds[UDP_SOCKET_A2].fd = socket(AF_INET, SOCK_DGRAM, 0);
-	// netNode->fds[UDP_SOCKET_A2].events = POLLIN;
-	if (netNode->fds[UDP_SOCKET_A2].fd == -1 || netNode->fds[TCP_SOCKET_C].fd == -1)
+	if (netNode->fds[UDP_SOCKET_A2].fd == -1)
 	{
 		exit_on_error("socket error");
 	}
 
-	//init TCP C address
-	memset(&netNode->fdsAddr[TCP_SOCKET_C], 0, sizeof(netNode->fdsAddr[TCP_SOCKET_C]));
-	netNode->fdsAddr[TCP_SOCKET_C].sin_family = AF_INET;
-	netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr = htonl(INADDR_ANY);
-	netNode->fdsAddr[TCP_SOCKET_C].sin_port = 0;
+	//init UDP A2 address
+	struct NET_GET_NODE_RESPONSE_PDU getNodeResponse = readNetGetNodeResponse(netNode->pduMessage);
+	netNode->fdsAddr[UDP_SOCKET_A2].sin_family = AF_INET;
+	netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr = getNodeResponse.address;
+	netNode->fdsAddr[UDP_SOCKET_A2].sin_port = getNodeResponse.port;
 
-	int reuseaddr=1;
-	if (setsockopt(netNode->fds[TCP_SOCKET_C].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
-	{
-    	exit_on_error("setsockopt error");
-	}	
-
-	socklen_t addrLengthC = sizeof(netNode->fdsAddr[TCP_SOCKET_C]);
-	if (bind(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_C], addrLengthC) == -1)
-	{
-		exit_on_error("bind error TCP C");
-	}
-
-	if (getsockname(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_C], &addrLengthC) == -1)
-	{
-		exit_on_error("getsockname error");
-	}
-	fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
+	initTCPSocketC(netNode);
 
 	//Send NET_JOIN
 	unsigned char netJoinMessage[14];
-	memset(netJoinMessage, 0, sizeof(netJoinMessage));
 	size_t messageSize = sizeof(netJoinMessage);
-
-	//OKLART OM DETTA ÄR VAD SOM SKA SKICKAS, (ENDAST INFO I TCP_C och UDP_A och UDP_A2)
-	struct NET_JOIN_PDU netJoin = {NET_JOIN,
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Src address MIN
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_port,		   //Src port MIN
-								   255,											   //Max span Vilken range den största har
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Max address Den som har stört range
-								   netNode->fdsAddr[TCP_SOCKET_C].sin_port};	   //Max port
-
-	memcpy(&netJoinMessage[0], &netJoin.type, 1);
-	memcpy(&netJoinMessage[1], &netJoin.src_address, 4);
-	memcpy(&netJoinMessage[5], &netJoin.src_port, 2);
-	memcpy(&netJoinMessage[7], &netJoin.max_span, 1);
-	memcpy(&netJoinMessage[8], &netJoin.max_address, 4);
-	memcpy(&netJoinMessage[12], &netJoin.max_port, 2);
-	
-	
-
+	memset(netJoinMessage, 0, messageSize);
+	writeNetJoinMessage(netJoinMessage, netNode);
 	socklen_t udpAddressLen = sizeof(netNode->fdsAddr[UDP_SOCKET_A2]);
+
 	if (sendto(netNode->fds[UDP_SOCKET_A2].fd, netJoinMessage, messageSize, 0, (struct sockaddr *) &netNode->fdsAddr[UDP_SOCKET_A2], udpAddressLen) == -1)
 	{
 		exit_on_error("send net join error");
 	}
 	fprintf(stderr, "net join sent: %d\n", netJoinMessage[0]);
 
-	if (listen(netNode->fds[TCP_SOCKET_C].fd, 2) == -1)
+	if (listen(netNode->fds[TCP_SOCKET_C].fd, 1) == -1)
 	{
 		exit_on_error("listen error");
 	}
 	fprintf(stderr, "listen done\n");
-	
+
 	socklen_t preNodeLen = sizeof(netNode->fdsAddr[TCP_SOCKET_D]);
 	netNode->fds[TCP_SOCKET_D].fd = accept(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_D], &preNodeLen);
 	if (netNode->fds[TCP_SOCKET_D].fd == -1)
@@ -503,40 +483,28 @@ eSystemState gotoStateQ7(struct NetNode *netNode)
 eSystemState gotoStateQ8(struct NetNode *netNode)
 {
 	netNode->entries = list_create();
-	// fprintf(stderr, "UDP A: %s:%d\n", inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A].sin_addr), ntohs(netNode->fdsAddr[UDP_SOCKET_A].sin_port));
-	// fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
-	// fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
-	// fprintf(stderr, "TCP D: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_D].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_D].sin_port));
-	// fprintf(stderr, "UDP A2: %s:%d\n", inet_ntoa(netNode->fdsAddr[UDP_SOCKET_A2].sin_addr), ntohs(netNode->fdsAddr[UDP_SOCKET_A2].sin_port));
 
-	// if (netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr &&
-	// 		netNode->fdsAddr[TCP_SOCKET_B].sin_port == netNode->fdsAddr[TCP_SOCKET_D].sin_port) 
-	// {
-	// 	netNode->fds[TCP_SOCKET_B] = netNode->fds[TCP_SOCKET_D];
-	// }
-	// else
-	// {
-		netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
-		if (netNode->fds[TCP_SOCKET_B].fd == -1)
-		{
-			exit_on_error("socket error");
-		}
+	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[TCP_SOCKET_B].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
 
-		// int reuseaddr=1;
-		// if (setsockopt(netNode->fds[TCP_SOCKET_B].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) 
-		// {
-		// 	exit_on_error("setsockopt error");
-		// }
+	struct NET_JOIN_RESPONSE_PDU joinResponse = readNetJoinResponse(netNode->pduMessage);
+	netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinResponse.next_address;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_port = joinResponse.next_port;
+	socklen_t addrLenB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+	
+	print_buffer(netNode->pduMessage, 9);
+	fprint_all_sockets(netNode);
 
-		socklen_t tcpAddrLenB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
-		if (connect(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_B], tcpAddrLenB) == -1)
-		{
-			exit_on_error("connect error");
-		}
-		fprintf(stderr, "connect done\n");
-	// }
-
-	// fprintf(stderr, "TCP B: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_B].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_B].sin_port));
+	// fprint_address(netNode, TCP_SOCKET_B);
+	if (connect(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_B], addrLenB) == -1)
+	{
+		exit_on_error("connect error");
+	}
+	fprintf(stderr, "connect done\n");
 
 	return q8;
 }
@@ -556,18 +524,50 @@ eSystemState gotoStateQ11(struct NetNode *netNode)
 	return q11;
 }
 
-eSystemState gotoStateQ12(struct NetNode *netNode)
+eSystemState gotoStateQ12(struct NetNode *netNode) //On NET_JOIN
 {
+	//Read message as NET_JOIN_PDU
+	struct NET_JOIN_PDU joinRequest = readNetJoinMessage(netNode->pduMessage);
+	// memcpy(&joinRequest.type, &netNode->pduMessage[0], 1);
+	// memcpy(&joinRequest.src_address, &netNode->pduMessage[1], 4);
+	// memcpy(&joinRequest.src_port, &netNode->pduMessage[5], 2);
+	// memcpy(&joinRequest.max_span, &netNode->pduMessage[7], 1);
+	// memcpy(&joinRequest.max_address, &netNode->pduMessage[8], 4);
+	// memcpy(&joinRequest.max_port, &netNode->pduMessage[12], 2);
+
+	//Update PDU max fields
+	unsigned char range = (netNode->nodeRange.max - netNode->nodeRange.min);
+	if (range > joinRequest.max_span)
+	{
+		//New max node, update max_span, max_address, max_port
+		memcpy(&netNode->pduMessage[7], &range, 1);
+		memcpy(&netNode->pduMessage[8], &netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, 4);
+		memcpy(&netNode->pduMessage[12], &netNode->fdsAddr[TCP_SOCKET_C].sin_port, 2);
+	}
+	// else if (range == joinRequest.max_span)
+	// {
+
+	// }
+
+
 	return q12;
 }
 
 eSystemState gotoStateQ13(struct NetNode *netNode)
 {
+	//If node = max_node //Q13
+	//Send NET_CLOSE_CONNECTION to succ
+	//Connect to prospect
+	//Send NET_JOIN_RESPONSE to prospect
+	//Transfer upper half of entry-range to succ
+
 	return q13;
 }
 
 eSystemState gotoStateQ14(struct NetNode *netNode)
 {
+	//If node != max_node //Q14
+	//Forward NET_JOIN
 	return q14;
 }
 
@@ -617,14 +617,192 @@ void send_message_TCP()
 {
 }
 
-// static bool succSameAsPre() {
-// 	return joinResponse.next_address == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr &&
-// 			joinResponse.next_port == netNode->fdsAddr[TCP_SOCKET_D].sin_addr.s_addr;
-// }
-
-static void print_buffer(unsigned char *buffer, int size) {
-	for (int c = 0; c < size; c++) {
+static void print_buffer(unsigned char *buffer, int size)
+{
+	for (int c = 0; c < size; c++)
+	{
 		fprintf(stderr, "%d ", buffer[c]);
 	}
 	fprintf(stderr, "\n");
+}
+
+static void fprint_address(struct NetNode *netNode, int socket)
+{
+	if (socket == UDP_SOCKET_A)
+	{
+		fprintf(stderr, "UDP A: ");
+	}
+	else if (socket == TCP_SOCKET_B)
+	{
+		fprintf(stderr, "TCP B: ");
+	}
+	else if (socket == TCP_SOCKET_C)
+	{
+		fprintf(stderr, "TCP C: ");
+	}
+	else if (socket == TCP_SOCKET_D)
+	{
+		fprintf(stderr, "TCP D: ");
+	}
+	else if (socket == UDP_SOCKET_A2)
+	{
+		fprintf(stderr, "UDP A2: ");
+	}
+	fprintf(stderr, "%s:%d\n", inet_ntoa(netNode->fdsAddr[socket].sin_addr), ntohs(netNode->fdsAddr[socket].sin_port));
+}
+
+static bool nodeConnected(struct NetNode *netNode)
+{
+	//If socket D or B has been opened the node is connected
+	return netNode->fds[TCP_SOCKET_D].fd != 0 || netNode->fds[TCP_SOCKET_B].fd != 0;
+}
+
+static void initTCPSocketC(struct NetNode *netNode)
+{
+	netNode->fds[TCP_SOCKET_C].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[TCP_SOCKET_C].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
+
+	//init TCP C address
+	memset(&netNode->fdsAddr[TCP_SOCKET_C], 0, sizeof(netNode->fdsAddr[TCP_SOCKET_C]));
+	netNode->fdsAddr[TCP_SOCKET_C].sin_family = AF_INET;
+	netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr = htonl(INADDR_ANY);
+	netNode->fdsAddr[TCP_SOCKET_C].sin_port = 0;
+
+	int reuseaddr = 1;
+	if (setsockopt(netNode->fds[TCP_SOCKET_C].fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1)
+	{
+		exit_on_error("setsockopt error");
+	}
+
+	socklen_t addrLengthC = sizeof(netNode->fdsAddr[TCP_SOCKET_C]);
+	if (bind(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_C], addrLengthC) == -1)
+	{
+		exit_on_error("bind error TCP C");
+	}
+
+	if (getsockname(netNode->fds[TCP_SOCKET_C].fd, (struct sockaddr *)&netNode->fdsAddr[TCP_SOCKET_C], &addrLengthC) == -1)
+	{
+		exit_on_error("getsockname error");
+	}
+	fprintf(stderr, "TCP C: %s:%d\n", inet_ntoa(netNode->fdsAddr[TCP_SOCKET_C].sin_addr), ntohs(netNode->fdsAddr[TCP_SOCKET_C].sin_port));
+}
+
+static struct NET_GET_NODE_RESPONSE_PDU readNetGetNodeResponse(unsigned char *message)
+{
+	struct NET_GET_NODE_RESPONSE_PDU getNodeResponse;
+	memcpy(&getNodeResponse.type, &message[0], 1);
+	memcpy(&getNodeResponse.address, &message[1], 4);
+	memcpy(&getNodeResponse.port, &message[5], 2);
+
+
+	// memset(&preNodeAddress, 0, sizeof(preNodeAddress));
+	// 	preNodeAddress.sin_family = AF_INET;
+	// 	preNodeAddress.sin_port = getNodeResponse.port;
+	// 	preNodeAddress.sin_addr.s_addr = getNodeResponse.address;
+
+	// 	if (preNodeAddress.sin_port == 0 && preNodeAddress.sin_addr.s_addr == 0)
+	// 	{
+	// 		fprintf(stderr, "got empty reponse\n");
+	// 		return eventNodeResponseEmpty;
+	// 	}
+	// 	else
+	// 	{
+	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_family = AF_INET;
+	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_port = preNodeAddress.sin_port;
+	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr = preNodeAddress.sin_addr.s_addr;
+	// 		fprintf(stderr, "received address: %s:%d\n", inet_ntoa(preNodeAddress.sin_addr), ntohs(preNodeAddress.sin_port));
+	// 		return eventNodeResponse;
+	// 	}
+
+	return getNodeResponse;
+}
+
+static struct NET_JOIN_PDU readNetJoinMessage(unsigned char *message)
+{
+	//Read message as NET_JOIN_PDU
+	struct NET_JOIN_PDU joinRequest;
+	memcpy(&joinRequest.type, &message[0], 1);
+	memcpy(&joinRequest.src_address, &message[1], 4);
+	memcpy(&joinRequest.src_port, &message[5], 2);
+	memcpy(&joinRequest.max_span, &message[7], 1);
+	memcpy(&joinRequest.max_address, &message[8], 4);
+	memcpy(&joinRequest.max_port, &message[12], 2);
+	return joinRequest;
+}
+
+static struct NET_JOIN_RESPONSE_PDU readNetJoinResponse(unsigned char *message)
+{
+	//Read message as NET_JOIN_RESPONSE_PDU
+	struct NET_JOIN_RESPONSE_PDU joinResponse;
+	memcpy(&joinResponse.type, &message[0], 1);
+	memcpy(&joinResponse.next_address, &message[1], 4);
+	memcpy(&joinResponse.next_port, &message[5], 2);
+	memcpy(&joinResponse.range_start, &message[7], 1);
+	memcpy(&joinResponse.range_end, &message[8], 1);
+	return joinResponse;
+}
+
+static void writeNetJoinMessage(unsigned char *destMessage, struct NetNode *netNode)
+{
+	struct NET_JOIN_PDU netJoin = {NET_JOIN,
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Src address
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_port,		   //Src port
+								   (netNode->nodeRange.max - netNode->nodeRange.min), //Max span
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, //Max address
+								   netNode->fdsAddr[TCP_SOCKET_C].sin_port};	   //Max port
+
+	memcpy(&destMessage[0], &netJoin.type, 1);
+	memcpy(&destMessage[1], &netJoin.src_address, 4);
+	memcpy(&destMessage[5], &netJoin.src_port, 2);
+	memcpy(&destMessage[7], &netJoin.max_span, 1);
+	memcpy(&destMessage[8], &netJoin.max_address, 4);
+	memcpy(&destMessage[12], &netJoin.max_port, 2);
+}
+
+static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode)
+{
+	/* 
+	Calculate new hash range
+	predecessor = node in response
+	successor = this node
+	minP = minP
+	maxS = maxP
+	maxP = floor( (maxP - minP) / 2 ) + minP
+	minS = maxP + 1 
+	*/
+
+	unsigned char minP = netNode->nodeRange.min;
+	unsigned char maxP = netNode->nodeRange.max;
+	unsigned char maxS = maxP;
+	maxP = (unsigned char)((maxP - minP) / 2) + minP;
+	unsigned char minS = maxP + 1;
+
+	destMessage[0] = NET_JOIN_RESPONSE;
+	memcpy(&destMessage[1], &netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, 4);
+	memcpy(&destMessage[5], &netNode->fdsAddr[TCP_SOCKET_C].sin_port, 2);
+	memcpy(&destMessage[7], &minS, 1);
+	memcpy(&destMessage[8], &maxS, 1);
+	// fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
+	// fprintf(stderr, "minP: %d maxP: %d\n", netNode->nodeRange.min, netNode->nodeRange.max);
+}
+
+static void fprint_all_sockets(struct NetNode *netNode)
+{
+	fprintf(stderr, "fd: %d ", netNode->fds[UDP_SOCKET_A].fd);
+	fprint_address(netNode, UDP_SOCKET_A);
+	
+	fprintf(stderr, "fd: %d ", netNode->fds[TCP_SOCKET_B].fd);
+	fprint_address(netNode, TCP_SOCKET_B);
+	
+	fprintf(stderr, "fd: %d ", netNode->fds[TCP_SOCKET_C].fd);
+	fprint_address(netNode, TCP_SOCKET_C);
+	
+	fprintf(stderr, "fd: %d ", netNode->fds[TCP_SOCKET_D].fd);
+	fprint_address(netNode, TCP_SOCKET_D);
+
+	fprintf(stderr, "fd: %d ", netNode->fds[UDP_SOCKET_A2].fd);
+	fprint_address(netNode, UDP_SOCKET_A2);
 }
