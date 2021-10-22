@@ -11,7 +11,7 @@ static void print_buffer(unsigned char *buffer, int size);
 static void fprint_address(struct NetNode *netNode, int socket);
 static bool nodeConnected(struct NetNode *netNode);
 static void initTCPSocketC(struct NetNode *netNode);
-static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode);
+static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode, struct sockaddr_in nextAddr);
 static void writeNetJoinMessage(unsigned char *destMessage, struct NetNode *netNode);
 static struct NET_JOIN_PDU readNetJoinMessage(unsigned char *message);
 static struct NET_JOIN_RESPONSE_PDU readNetJoinResponse(unsigned char *message);
@@ -390,7 +390,7 @@ eSystemState gotoStateQ5(struct NetNode *netNode)
 	unsigned char netJoinResponseMessage[9];
 	size_t messageSize = sizeof(netJoinResponseMessage);
 	memset(netJoinResponseMessage, 0, messageSize);
-	writeNetJoinResponse(netJoinResponseMessage, netNode);
+	writeNetJoinResponse(netJoinResponseMessage, netNode, netNode->fdsAddr[TCP_SOCKET_C]);
 
 	if (send(netNode->fds[TCP_SOCKET_B].fd, netJoinResponseMessage, messageSize, 0) == -1)
 	{
@@ -528,12 +528,6 @@ eSystemState gotoStateQ12(struct NetNode *netNode) //On NET_JOIN
 {
 	//Read message as NET_JOIN_PDU
 	struct NET_JOIN_PDU joinRequest = readNetJoinMessage(netNode->pduMessage);
-	// memcpy(&joinRequest.type, &netNode->pduMessage[0], 1);
-	// memcpy(&joinRequest.src_address, &netNode->pduMessage[1], 4);
-	// memcpy(&joinRequest.src_port, &netNode->pduMessage[5], 2);
-	// memcpy(&joinRequest.max_span, &netNode->pduMessage[7], 1);
-	// memcpy(&joinRequest.max_address, &netNode->pduMessage[8], 4);
-	// memcpy(&joinRequest.max_port, &netNode->pduMessage[12], 2);
 
 	//Update PDU max fields
 	unsigned char range = (netNode->nodeRange.max - netNode->nodeRange.min);
@@ -544,22 +538,62 @@ eSystemState gotoStateQ12(struct NetNode *netNode) //On NET_JOIN
 		memcpy(&netNode->pduMessage[8], &netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, 4);
 		memcpy(&netNode->pduMessage[12], &netNode->fdsAddr[TCP_SOCKET_C].sin_port, 2);
 	}
-	// else if (range == joinRequest.max_span)
-	// {
-
-	// }
-
 
 	return q12;
 }
 
 eSystemState gotoStateQ13(struct NetNode *netNode)
 {
-	//If node = max_node //Q13
-	//Send NET_CLOSE_CONNECTION to succ
+	//Node is max_node
+
+	//Store address to old successor
+	struct sockaddr_in oldSuccessor = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr,
+		.sin_port = netNode->fdsAddr[TCP_SOCKET_B].sin_port};
+
+	//Send NET_CLOSE_CONNECTION to successor
+	unsigned char closeConnectionMessage[1];
+	size_t messageCloseSize = sizeof(closeConnectionMessage);
+	memset(closeConnectionMessage, 0, messageCloseSize);
+	closeConnectionMessage[0] = NET_CLOSE_CONNECTION;
+
+	if (send(netNode->fds[TCP_SOCKET_B].fd, closeConnectionMessage, messageCloseSize, 0) == -1)
+	{
+		exit_on_error("send error");
+	}
+
+	//Close and reopen socket B
+	close(netNode->fds[TCP_SOCKET_B].fd);
+	netNode->fds[TCP_SOCKET_B].fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (netNode->fds[TCP_SOCKET_B].fd == -1)
+	{
+		exit_on_error("socket error");
+	}
+
 	//Connect to prospect
+	struct NET_JOIN_PDU joinRequest = readNetJoinMessage(netNode->pduMessage);
+	netNode->fdsAddr[TCP_SOCKET_B].sin_family = AF_INET;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_addr.s_addr = joinRequest.src_address;
+	netNode->fdsAddr[TCP_SOCKET_B].sin_port = joinRequest.src_port;
+	socklen_t addLenB = sizeof(netNode->fdsAddr[TCP_SOCKET_B]);
+	if (connect(netNode->fds[TCP_SOCKET_B].fd, (struct sockaddr *) &netNode->fdsAddr[TCP_SOCKET_B], addLenB) == -1)
+	{
+		exit_on_error("connect error");
+	}
+
 	//Send NET_JOIN_RESPONSE to prospect
-	//Transfer upper half of entry-range to succ
+	unsigned char netJoinResponseMessage[9];
+	size_t messageJoinSize = sizeof(netJoinResponseMessage);
+	memset(netJoinResponseMessage, 0, messageJoinSize);
+	writeNetJoinResponse(netJoinResponseMessage, netNode, oldSuccessor);
+
+	if (send(netNode->fds[TCP_SOCKET_B].fd, netJoinResponseMessage, messageJoinSize, 0) == -1)
+	{
+		exit_on_error("send error");
+	}
+	
+	//Transfer upper half of entry-range to succ //NEED TO BE IMPLEMENTED
 
 	return q13;
 }
@@ -697,26 +731,6 @@ static struct NET_GET_NODE_RESPONSE_PDU readNetGetNodeResponse(unsigned char *me
 	memcpy(&getNodeResponse.address, &message[1], 4);
 	memcpy(&getNodeResponse.port, &message[5], 2);
 
-
-	// memset(&preNodeAddress, 0, sizeof(preNodeAddress));
-	// 	preNodeAddress.sin_family = AF_INET;
-	// 	preNodeAddress.sin_port = getNodeResponse.port;
-	// 	preNodeAddress.sin_addr.s_addr = getNodeResponse.address;
-
-	// 	if (preNodeAddress.sin_port == 0 && preNodeAddress.sin_addr.s_addr == 0)
-	// 	{
-	// 		fprintf(stderr, "got empty reponse\n");
-	// 		return eventNodeResponseEmpty;
-	// 	}
-	// 	else
-	// 	{
-	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_family = AF_INET;
-	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_port = preNodeAddress.sin_port;
-	// 		netNode->fdsAddr[UDP_SOCKET_A2].sin_addr.s_addr = preNodeAddress.sin_addr.s_addr;
-	// 		fprintf(stderr, "received address: %s:%d\n", inet_ntoa(preNodeAddress.sin_addr), ntohs(preNodeAddress.sin_port));
-	// 		return eventNodeResponse;
-	// 	}
-
 	return getNodeResponse;
 }
 
@@ -762,7 +776,7 @@ static void writeNetJoinMessage(unsigned char *destMessage, struct NetNode *netN
 	memcpy(&destMessage[12], &netJoin.max_port, 2);
 }
 
-static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode)
+static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *netNode, struct sockaddr_in nextAddr)
 {
 	/* 
 	Calculate new hash range
@@ -781,8 +795,8 @@ static void writeNetJoinResponse(unsigned char *destMessage, struct NetNode *net
 	unsigned char minS = maxP + 1;
 
 	destMessage[0] = NET_JOIN_RESPONSE;
-	memcpy(&destMessage[1], &netNode->fdsAddr[TCP_SOCKET_C].sin_addr.s_addr, 4);
-	memcpy(&destMessage[5], &netNode->fdsAddr[TCP_SOCKET_C].sin_port, 2);
+	memcpy(&destMessage[1], &nextAddr.sin_addr.s_addr, 4);
+	memcpy(&destMessage[5], &nextAddr.sin_port, 2);
 	memcpy(&destMessage[7], &minS, 1);
 	memcpy(&destMessage[8], &maxS, 1);
 	// fprintf(stderr, "minS: %d maxS: %d\n", minS, maxS);
