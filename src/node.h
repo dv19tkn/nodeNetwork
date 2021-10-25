@@ -12,15 +12,19 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <netinet/ip.h>
-#include <arpa/inet.h>
 #include <poll.h>
+
 #include "pdu.h"
 #include "datatypes/list.h"
+#include "datatypes/hash.h"
 
 typedef enum {
     q1,
@@ -49,7 +53,9 @@ typedef enum {
     eventNodeResponse, //Q3->Q7
     eventNodeResponseEmpty, //Q3->Q4
     eventJoinResponse, //Q7->Q8
-    eventInsertLookupRemove, //Q6-Q9
+    eventInsert, //Q6-Q9
+    eventLookup, //Q6-Q9
+    eventRemove, //Q6-Q9
     eventShutDown, //Q6->Q10
     eventJoin, //Q6->Q12
     eventNewRange, //Q6->Q15
