@@ -14,6 +14,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -82,6 +83,7 @@ struct NetNode {
     List *entries;
     Range nodeRange;
     unsigned char *pduMessage;
+    // void *pdu_Message;
 };
 
 typedef eSystemState(*const afEventHandler[lastState][lastEvent])(struct NetNode *netNode);
