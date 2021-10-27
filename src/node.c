@@ -273,8 +273,6 @@ static eSystemEvent readEvent(struct NetNode *netNode)
 
 static eSystemEvent find_right_event(struct NetNode *netNode, unsigned char *buffer, ssize_t buffSize)
 {
-	fprintf(stderr, "buffer[0]: %d\n", buffer[0]);
-
 	switch (buffer[0])
 	{
 	case STUN_RESPONSE:
