@@ -182,3 +182,20 @@ const char *list_inspect_name(ListPos pos)
     char *name = pos.node->name;
     return name;
 }
+
+int list_get_length(List *lst)
+{
+    ListPos pos = list_first(lst);
+    int len = 0;
+
+    if (!list_is_empty(lst))
+    {
+        while (!list_pos_equal(pos, list_end(lst)))
+        {
+            len++;
+            pos = list_next(pos);
+        }
+    }
+
+    return len;
+}

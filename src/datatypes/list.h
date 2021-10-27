@@ -211,6 +211,14 @@ const char *list_inspect_email(ListPos pos);
 const char *list_inspect_name(ListPos pos);
 
 /**
+ * Returns the length of the list.
+ * 
+ * @param List
+ * @return int Length of the list.  
+ */
+int list_get_length(List *lst);
+
+/**
  * @}
  */
 
