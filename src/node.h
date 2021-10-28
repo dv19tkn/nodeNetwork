@@ -39,6 +39,7 @@
 #include "datatypes/hash.h"
 
 typedef enum {
+    firstState,
     q1,
     q2,
     q3,
@@ -61,6 +62,7 @@ typedef enum {
 } eSystemState;
 
 typedef enum {
+    firstEvent,
     eventStunResponse, //Q2->Q3
     eventNodeResponse, //Q3->Q7
     eventNodeResponseEmpty, //Q3->Q4
@@ -94,14 +96,13 @@ struct NetNode {
     List *entries;
     Range nodeRange;
     unsigned char *pduMessage;
-    // void *pdu_Message;
 };
 
 typedef eSystemState(*const afEventHandler[lastState][lastEvent])(struct NetNode *netNode);
 
 typedef eSystemState(*pfEventHandler)(struct NetNode *netNode); //NEEDED?
 
-eSystemState gotoStateQ1(struct NetNode *netNode, char **argv);
+eSystemState gotoStateQ1(struct NetNode *netNode);
 
 eSystemState gotoStateQ2(struct NetNode *netNode);
 
