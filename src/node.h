@@ -8,6 +8,17 @@
 #define UDP_SOCKET_A2 4 // Agent messages
 #define NO_SOCKETS 5
 
+#define GET_NODE_RESP_SIZE 7
+#define JOIN_SIZE 14
+#define JOIN_RESP_SIZE 9
+#define CLOSE_CON_SIZE 1
+#define NEW_RANGE_SIZE 3
+#define NEW_RANGE_RES_SIZE 1
+#define LEAVING_SIZE 7
+#define REMOVE_SIZE 13
+#define LOOKUP_SIZE 19
+#define STUN_RESP_SIZE 5
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
